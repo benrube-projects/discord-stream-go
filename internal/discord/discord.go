@@ -2,7 +2,6 @@ package discord
 
 import (
 	"encoding/binary"
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -27,16 +26,16 @@ type DiscordClient struct {
 
 var buffer = make([][]byte, 0)
 
-func init() {
-	loadSound()
-}
-
 func (c *DiscordClient) StartServer() {
+	err := loadSound()
+	if err != nil {
+		c.Logger.Error("could not load sound", zap.Error(err))
+	}
+
 	c.guildsTransmitting = RWMap{
 		Data: make(map[string]bool),
 	}
 	c.Logger.Info("Starting Discord server")
-	var err error
 	c.client, err = discordgo.New(TokenPrefix + os.Getenv(TokenConfig))
 	if err != nil {
 		c.Logger.Fatal("error creating Discord session", zap.Error(err))
@@ -99,21 +98,28 @@ func (c *DiscordClient) handleVoiceStateUpdate(s *discordgo.Session, m *discordg
 					c.guildsTransmitting.Unlock()
 				}()
 			}
+			time.Sleep(250 * time.Millisecond)
 			vc, err := s.ChannelVoiceJoin(m.GuildID, m.ChannelID, false, true)
 			if err != nil {
 				c.Logger.Error("error joining voice channel", zap.Error(err))
 			}
+			defer vc.Disconnect()
+			defer vc.Speaking(false)
+
 			c.Logger.Info("Joined voice channel", zap.String("channel", m.ChannelID))
 			time.Sleep(250 * time.Millisecond)
 			vc.Speaking(true)
 			for _, buff := range buffer {
-				vc.OpusSend <- buff
+				select {
+				case vc.OpusSend <- buff:
+					continue
+				case <-time.After(250 * time.Millisecond):
+					c.Logger.Warn("could not send audio", zap.String("guild", m.GuildID))
+					return
+				}
 			}
 
-			vc.Speaking(false)
-			time.Sleep(250 * time.Millisecond)
 			// Disconnect from the provided voice channel.
-			vc.Disconnect()
 
 		} else {
 			c.Logger.Info("Left voice channel", zap.String("channel", m.ChannelID))
@@ -130,7 +136,6 @@ func loadSound() error {
 
 	file, err := os.Open("/Users/ben/Downloads/test.dca")
 	if err != nil {
-		fmt.Println("Error opening dca file :", err)
 		return err
 	}
 
@@ -150,7 +155,6 @@ func loadSound() error {
 		}
 
 		if err != nil {
-			fmt.Println("Error reading from dca file :", err)
 			return err
 		}
 
@@ -160,7 +164,6 @@ func loadSound() error {
 
 		// Should not be any end of file errors
 		if err != nil {
-			fmt.Println("Error reading from dca file :", err)
 			return err
 		}
 
